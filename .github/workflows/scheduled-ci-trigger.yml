@@ -1,20 +1,8 @@
 name: Weekly CI Scheduler
-
-on:
-  # Runs at 08:00 Beijing time every day
-  schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
-    inputs:
-      debug:
-        description: 'Debug mode'
-        required: false
-        default: 'false'
-
 env:
   TARGET_WORKFLOWS: '["RT-Thread BSP Static Build Check", "utest_auto_run"]'
-  DISCUSSION_CATEGORY: "Github Action Exception Reports"
-
+  DISCUSSION_CATEGORY: Github Action Exception Reports
+  GERALT_SECRET: ${{ secrets.GERALT }}
 jobs:
   trigger-and-monitor:
     name: Trigger and Monitor CIs
@@ -23,22 +11,18 @@ jobs:
       failed_workflows: ${{ steps.collect-results.outputs.failed_workflows }}
       total_workflows: ${{ steps.collect-results.outputs.total_workflows }}
       has_results: ${{ steps.collect-results.outputs.has_results }}
-    
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
-
+      uses: actions/checkout@v4.3.1
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install requests
-
     - name: Record start time
       id: start-time
       run: |
         echo "start_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
         echo "Start time: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
     - name: Trigger CI workflows directly
       id: trigger-ci
       run: |
@@ -46,7 +30,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TARGET_WORKFLOWS: ${{ env.TARGET_WORKFLOWS }}
-
     - name: Wait for workflows to appear
       id: wait-for-workflows
       run: |
@@ -55,7 +38,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TARGET_WORKFLOWS: ${{ env.TARGET_WORKFLOWS }}
-
     - name: Monitor CI workflows
       id: monitor-ci
       run: |
@@ -63,7 +45,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TARGET_WORKFLOWS: ${{ env.TARGET_WORKFLOWS }}
-
     - name: Collect monitoring results
       id: collect-results
       run: |
@@ -82,7 +63,6 @@ jobs:
           echo "total_workflows=0" >> $GITHUB_OUTPUT
           echo "has_results=false" >> $GITHUB_OUTPUT
         fi
-
     - name: Generate detailed report
       if: steps.collect-results.outputs.has_results == 'true' && steps.collect-results.outputs.failed_workflows != '0'
       id: generate-report
@@ -90,7 +70,6 @@ jobs:
         echo "Generating detailed report..."
         python tools/ci/scheduled-ci-trigger/generate_report.py
         echo "Report generation completed"
-
     - name: Upload report artifact
       if: steps.collect-results.outputs.has_results == 'true' && steps.collect-results.outputs.failed_workflows != '0'
       uses: actions/upload-artifact@v4
@@ -100,50 +79,46 @@ jobs:
           monitoring_results.json
           failure_details.md
         retention-days: 7
-
   create-discussion:
     name: Create Discussion Report
     needs: trigger-and-monitor
     if: needs.trigger-and-monitor.outputs.has_results == 'true' && needs.trigger-and-monitor.outputs.failed_workflows != '0'
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
-
+      uses: actions/checkout@v4.3.1
     - name: Download report artifact
       uses: actions/download-artifact@v4
       with:
         name: ci-failure-report
-
     - name: Create Discussion
       uses: actions/github-script@v6
       env:
         DISCUSSION_CATEGORY: ${{ env.DISCUSSION_CATEGORY }}
       with:
-        script: |
+        script: |-
           const fs = require('fs');
-          
+
           const reportPath = './failure_details.md';
-          
+
           let reportContent = fs.readFileSync(reportPath, 'utf8');
-          
+
           // 提取日期从第一行: # YYYYMMDD_ci_integration-failed-report
           const lines = reportContent.split('\n');
           const firstLine = lines[0].trim();
           const dateMatch = firstLine.match(/# (\d{8})_ci_integration-failed-report/);
-          
+
           if (!dateMatch) {
             console.error('Failed to extract date from first line:', firstLine);
             process.exit(1);
           }
-          
+
           const dateString = dateMatch[1];
           const discussionTitle = `${dateString}_ci_integration-failed-report`;
-          
+
           // === 关键修复：移除第一行（用于提取的隐藏行） ===
           reportContent = lines.slice(1).join('\n').trim();
-          
+
           // 获取仓库ID和分类ID
           const getRepoQuery = `
             query($owner: String!, $repo: String!) {
@@ -158,21 +133,21 @@ jobs:
               }
             }
           `;
-          
+
           const repoData = await github.graphql(getRepoQuery, {
             owner: context.repo.owner,
             repo: context.repo.repo
           });
-          
+
           const repositoryId = repoData.repository.id;
           const categories = repoData.repository.discussionCategories.nodes;
           const targetCategory = categories.find(cat => cat.name === process.env.DISCUSSION_CATEGORY);
-          
+
           if (!targetCategory) {
             console.error('Category not found:', process.env.DISCUSSION_CATEGORY);
             process.exit(1);
           }
-          
+
           const createDiscussionMutation = `
             mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
               createDiscussion(input: {
@@ -189,12 +164,21 @@ jobs:
               }
             }
           `;
-          
+
           const result = await github.graphql(createDiscussionMutation, {
             repositoryId: repositoryId,
             categoryId: targetCategory.id,
             title: discussionTitle,
             body: reportContent  // 使用清理后的内容（无第一行）
           });
-          
+
           console.log('Discussion created successfully:', result.createDiscussion.discussion.url);
+on:
+  schedule:
+  - cron: 0 0 * * *
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: Debug mode
+        required: false
+        default: 'false'
